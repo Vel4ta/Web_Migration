@@ -1,0 +1,4 @@
+Departments; WEB_MIGRATION/departments/
+Targets; WEB_MIGRATION/targets/links0.txt,
+BaseUrl; https://www.csun.edu/as/,
+Reports; WEB_MIGRATION/reports/,
