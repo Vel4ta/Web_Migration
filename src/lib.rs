@@ -470,18 +470,30 @@ where
     }
 }
 
-// fn fold_closure<Fin>(f: Fin) -> impl 
-//     Fn((Vec<String>, String), char) -> (Vec<String>, String)
-//     where Fin: Fn(char) -> bool {
-//     move |(mut tot, mut cur), item| match item {
-//         v if f(v) => {
-//             tot.push(cur);
-//             (tot, String::new())
+// fn prep_data_generic<T: Copy, F1, F2>(file_path: &str, f1: F1, f2: F2, acc1: T) -> Option<Vec<T>>
+// where
+//     F1: Fn((Vec<T>, T), char) -> (Vec<T>, T),
+//     F2: Fn(&[T]) -> T {
+//     match read_file(String::from(file_path)) {
+//         Ok(buf) => Some(buf.lines()
+//             .fold(Vec::new(), |mut acc2, item| {
+//                 match item {
+//                     Ok(y) => {
+//                         let (mut tot, cur) = y
+//                             .chars()
+//                             .fold((Vec::new(), acc1), &f1);
+
+//                         tot.push(cur);
+//                         acc2.push(f2(&tot[..]));
+//                     },
+//                     Err(e) => println!("{e}"),
+//                 };
+//                 acc2
+//             })
+//         ),
+//         Err(e) => {
+//             println!("{e}");
+//             None
 //         },
-//         v if v != ' ' => {
-//             cur.push(item);
-//             (tot, cur)
-//         },
-//         _ => (tot, cur),
 //     }
 // }
