@@ -118,17 +118,18 @@ impl ConfigPath {
     fn prep_paths(base_path: &str) -> Option<Vec<Paths>> {
         prep_data(
             "./config/config.txt",
-            |(mut tot, mut cur), item| match item {
-                ';' | ',' => {
-                    tot.push(cur);
-                    (tot, String::new())
-                },
-                v if v != ' ' => {
-                    cur.push(item);
-                    (tot, cur)
-                },
-                _ => (tot, cur),
-            },
+            str_acc_match(|v| v == ';' || v == ','),
+            // |(mut tot, mut cur), item| match item {
+            //     ';' | ',' => {
+            //         tot.push(cur);
+            //         (tot, String::new())
+            //     },
+            //     v if v != ' ' => {
+            //         cur.push(item);
+            //         (tot, cur)
+            //     },
+            //     _ => (tot, cur),
+            // },
             |p: &[String]| Paths::from(p, &base_path)
         )
     }
@@ -201,17 +202,18 @@ impl Targets {
     fn prep_targets(target_path: &Paths) -> Option<Vec<Target>> {
         prep_data(
             &target_path.get_path(),
-            |(mut tot, mut cur), item| match item {
-                '/' => {
-                    tot.push(cur);
-                    (tot, String::new())
-                },
-                v if v != ' ' => {
-                    cur.push(item);
-                    (tot, cur)
-                },
-                _ => (tot, cur),
-            },
+            str_acc_match(|v| v == '/'),
+            // |(mut tot, mut cur), item| match item {
+            //     '/' => {
+            //         tot.push(cur);
+            //         (tot, String::new())
+            //     },
+            //     v if v != ' ' => {
+            //         cur.push(item);
+            //         (tot, cur)
+            //     },
+            //     _ => (tot, cur),
+            // },
             Target::build
         )
     }
@@ -319,25 +321,22 @@ pub struct Manager;
 
 impl Manager {
     pub fn run(base_path: &str) -> Result<String> {
-        if Path::new(&base_path).is_dir() {
-            match ConfigPath::prep_paths(base_path) {
-                Some(c) => {
-                    let paths = ConfigPath::build(c);
+        if !Path::new(&base_path).is_dir() {
+            return Err(Error::from("Invalid base path"))
+        }
 
-                    let isolated_targets = Targets::prep_targets(&paths.targets);
+        if let Some(c) = ConfigPath::prep_paths(base_path) {
+            let paths = ConfigPath::build(c);
 
-                    let targets = Targets::build(isolated_targets);
-            
-                    let report = pursue_targets(targets, paths)?;
+            let isolated_targets = Targets::prep_targets(&paths.targets);
 
-                    report.build()
-                },
-                _ => {
-                    Err(Error::from("bad config file"))
-                },
-            }
+            let targets = Targets::build(isolated_targets);
+        
+            let report = pursue_targets(targets, paths)?;
+
+            report.build()
         } else {
-            Err(Error::from("Invalid base path"))
+            Err(Error::from("Missing config file. Make sure config.txt exists in config/. Make sure it has appropriate content."))
         }
     }
 }
@@ -454,11 +453,10 @@ fn join_by(s: &[String], acc: String, sep: &str) -> String {
     }
 }
 
-fn prep_data<
-    T,
+fn prep_data<T, F1, F2>(file_path: &str, f1: F1, f2: F2) -> Option<Vec<T>> 
+where
     F1: Fn((Vec<String>, String), char) -> (Vec<String>, String),
-    F2: Fn(&[String]) -> T
-    >(file_path: &str, f1: F1, f2: F2) -> Option<Vec<T>> {
+    F2: Fn(&[String]) -> T {
     match read_file(String::from(file_path)) {
         Ok(buf) => Some(buf.lines()
             .fold(Vec::new(), |mut acc, item| {
@@ -481,5 +479,21 @@ fn prep_data<
             println!("{e}");
             None
         },
+    }
+}
+
+fn str_acc_match<Fin>(f: Fin) -> impl 
+    Fn((Vec<String>, String), char) -> (Vec<String>, String)
+    where Fin: Fn(char) -> bool {
+    move |(mut tot, mut cur), item| match item {
+        v if f(v) => {
+            tot.push(cur);
+            (tot, String::new())
+        },
+        v if v != ' ' => {
+            cur.push(item);
+            (tot, cur)
+        },
+        _ => (tot, cur),
     }
 }
