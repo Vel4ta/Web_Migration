@@ -7,9 +7,9 @@ fn main() {
     let arguments: Vec<String> = env::args().skip(1).collect();
     match &arguments[..] {
         [a] => match Manager::run(a) {
-            Ok(results) => {
-                println!("Run Report: {:?}", results);
+            Ok(report) => {
                 println!("Application completed successfully");
+                println!("Report Location: {report}");
             
                 process::exit(0);
             },

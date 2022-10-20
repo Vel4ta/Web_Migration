@@ -278,10 +278,47 @@ impl Department {
     }
 }
 
+struct Report {
+    info: Department,
+    data: Vec<String>,
+}
+
+impl Report {
+    fn new(info: Department) -> Self {
+        Self {
+            info: info,
+            data: Vec::new(),
+        }
+    }
+
+    fn add(&mut self, report: String) -> () {
+        self.data.push(report)
+    }
+
+    fn build(self) -> Result<String> {
+        match self.info.create_path() {
+            Ok(_) => Ok(
+                self.info.store(
+                    Bytes::from(
+                        self.data
+                            .iter()
+                            .fold(String::new(), |acc, item| {
+                                acc + item + ",\n"
+                            })
+                            .as_bytes()
+                            .to_owned()
+                    )
+                )
+            ),
+            Err(e) => Err(e),
+        }
+    }
+}
+
 pub struct Manager;
 
 impl Manager {
-    pub fn run(base_path: &str) -> Result<Vec<String>> {
+    pub fn run(base_path: &str) -> Result<String> {
         if Path::new(&base_path).is_dir() {
             match ConfigPath::prep_paths(base_path) {
                 Some(c) => {
@@ -292,8 +329,8 @@ impl Manager {
                     let targets = Targets::build(isolated_targets);
             
                     let report = pursue_targets(targets, paths)?;
-            
-                    Ok(report)
+
+                    report.build()
                 },
                 _ => {
                     Err(Error::from("bad config file"))
@@ -322,17 +359,25 @@ fn a_client_and_runtime() -> Result<(Client, Runtime)> {
         .timeout(Duration::from_secs(60))
         .build()?;
     let r = Builder::new_multi_thread()
-        // .worker_threads(1)
+        .worker_threads(3)
         .enable_all()
         .build()?;
     Ok((c, r))
 }
 
-fn pursue_targets(mut targets: Targets, paths: ConfigPath) -> Result<Vec<String>> {
+fn pursue_targets(mut targets: Targets, paths: ConfigPath) -> Result<Report> {
     match a_client_and_runtime() {
         Ok((client, rt)) => {
             let today = Today::build();
-            let mut results = Vec::<String>::new();
+            let mut report = Report::new(
+                Department::build(
+                    Target::build(
+                        &[String::from("reports")]
+                    ),
+                    &today,
+                    &paths.reports
+                )
+            );
             let mut count = 0;
             while let Some(target) = targets.pop() {
                 let d = Department::build(target, &today, &paths.departments);
@@ -349,13 +394,14 @@ fn pursue_targets(mut targets: Targets, paths: ConfigPath) -> Result<Vec<String>
                 );
                 
                 count += 1;
-                if count%10 == 0 {
-                    std::thread::sleep(Duration::from_millis(3000));
+                if count%3 == 0 {
+                    std::thread::sleep(Duration::from_millis(1000));
+                    count -= count;
                 }
 
                 match d.create_path() {
                     Ok(_) => match rt.block_on(handle) {
-                        Ok(Some(content)) => results.push(
+                        Ok(Some(content)) => report.add(
                             d.store(content)
                         ),
                         Ok(None) => println!("{}", d.path.to_url()),
@@ -364,7 +410,7 @@ fn pursue_targets(mut targets: Targets, paths: ConfigPath) -> Result<Vec<String>
                     Err(e) => println!("{e}"),
                 };
             }
-            Ok(results)
+            Ok(report)
         },
         Err(e) => Err(e),
     }
