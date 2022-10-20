@@ -118,18 +118,7 @@ impl ConfigPath {
     fn prep_paths(base_path: &str) -> Option<Vec<Paths>> {
         prep_data(
             "./config/config.txt",
-            str_acc_match(|v| v == ';' || v == ','),
-            // |(mut tot, mut cur), item| match item {
-            //     ';' | ',' => {
-            //         tot.push(cur);
-            //         (tot, String::new())
-            //     },
-            //     v if v != ' ' => {
-            //         cur.push(item);
-            //         (tot, cur)
-            //     },
-            //     _ => (tot, cur),
-            // },
+            |v: char| v == ';' || v == ',',
             |p: &[String]| Paths::from(p, &base_path)
         )
     }
@@ -202,18 +191,7 @@ impl Targets {
     fn prep_targets(target_path: &Paths) -> Option<Vec<Target>> {
         prep_data(
             &target_path.get_path(),
-            str_acc_match(|v| v == '/'),
-            // |(mut tot, mut cur), item| match item {
-            //     '/' => {
-            //         tot.push(cur);
-            //         (tot, String::new())
-            //     },
-            //     v if v != ' ' => {
-            //         cur.push(item);
-            //         (tot, cur)
-            //     },
-            //     _ => (tot, cur),
-            // },
+            |v| v == '/',
             Target::build
         )
     }
@@ -455,7 +433,7 @@ fn join_by(s: &[String], acc: String, sep: &str) -> String {
 
 fn prep_data<T, F1, F2>(file_path: &str, f1: F1, f2: F2) -> Option<Vec<T>> 
 where
-    F1: Fn((Vec<String>, String), char) -> (Vec<String>, String),
+    F1: Fn(char) -> bool,
     F2: Fn(&[String]) -> T {
     match read_file(String::from(file_path)) {
         Ok(buf) => Some(buf.lines()
@@ -465,7 +443,17 @@ where
                         let (mut tot, cur) = y.chars()
                             .fold(
                                 (Vec::new(), String::new()),
-                                &f1
+                                |(mut tot, mut cur), item| match item {
+                                    v if f1(v) => {
+                                        tot.push(cur);
+                                        (tot, String::new())
+                                    },
+                                    v if v != ' ' => {
+                                        cur.push(item);
+                                        (tot, cur)
+                                    },
+                                    _ => (tot, cur),
+                                }
                             );
                         tot.push(cur);
                         acc.push(f2(&tot[..]));
@@ -482,18 +470,18 @@ where
     }
 }
 
-fn str_acc_match<Fin>(f: Fin) -> impl 
-    Fn((Vec<String>, String), char) -> (Vec<String>, String)
-    where Fin: Fn(char) -> bool {
-    move |(mut tot, mut cur), item| match item {
-        v if f(v) => {
-            tot.push(cur);
-            (tot, String::new())
-        },
-        v if v != ' ' => {
-            cur.push(item);
-            (tot, cur)
-        },
-        _ => (tot, cur),
-    }
-}
+// fn fold_closure<Fin>(f: Fin) -> impl 
+//     Fn((Vec<String>, String), char) -> (Vec<String>, String)
+//     where Fin: Fn(char) -> bool {
+//     move |(mut tot, mut cur), item| match item {
+//         v if f(v) => {
+//             tot.push(cur);
+//             (tot, String::new())
+//         },
+//         v if v != ' ' => {
+//             cur.push(item);
+//             (tot, cur)
+//         },
+//         _ => (tot, cur),
+//     }
+// }
