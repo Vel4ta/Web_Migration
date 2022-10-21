@@ -45,7 +45,6 @@ impl Today {
     }
 }
 
-#[derive(Clone)]
 enum Paths {
     Departments(String),
     Targets(String),
@@ -76,7 +75,7 @@ impl Paths {
             Paths::Reports(p) |
             Paths::Targets(p) |
             Paths::BaseUrl(p) => String::new() + p,
-            Paths::Bad => String::from("bad path"),
+            _ => String::from("bad path"),
         }
     }
 
@@ -93,20 +92,18 @@ struct ConfigPath {
 }
 
 impl ConfigPath {
-    fn build(paths: Vec<Paths>) -> Self {
-        let (d, t, b, r) = paths.iter()
-            .fold(
-                (Paths::Bad, Paths::Bad, Paths::Bad, Paths::Bad),
-                |(d, t, b, r), path| {
-                    match *path {
-                        Paths::Departments(_) => (path.clone(), t, b, r),
-                        Paths::Targets(_) => (d, path.clone(), b, r),
-                        Paths::BaseUrl(_) => (d, t, path.clone(), r),
-                        Paths::Reports(_) => (d, t, b, path.clone()),
-                        _ => (d, t, b, r)
-                    }
-                }
-            );
+    fn build(mut paths: Vec<Paths>) -> Self {
+        let (mut d, mut t, mut b, mut r) = (Paths::Bad, Paths::Bad, Paths::Bad, Paths::Bad);
+        while let Some(path) = paths.pop() {
+            (d, t, b, r) = match path {
+                Paths::Departments(_) => (path, t, b, r),
+                Paths::Targets(_) => (d, path, b, r),
+                Paths::BaseUrl(_) => (d, t, path, r),
+                Paths::Reports(_) => (d, t, b, path),
+                _ => (d, t, b, r),
+            }
+        }
+
         Self {
             departments: d,
             targets: t,
@@ -200,17 +197,15 @@ impl Targets {
 struct Department {
     base: Paths,
     path: Target,
-    timestamp: String,
-    date: String,
+    today: Today,
 }
 
 impl Department {
-    fn build(path: Target, today: &Today, base: &Paths) -> Self {
+    fn build(path: Target, today: Today, base: Paths) -> Self {
         Self {
-            base: base.clone(),
+            base: base,
             path: path,
-            timestamp: today.time.get(),
-            date: today.date.get(),
+            today: today,
         }
     }
 
@@ -219,11 +214,11 @@ impl Department {
     }
 
     fn storage_location_today(&self) -> String {
-        self.location() + &self.date + &"/"
+        self.location() + &self.today.date.get() + &"/"
     }
     
     fn storage_location_now(&self) -> String {
-        self.storage_location_today() + &self.timestamp + &"/"
+        self.storage_location_today() + &self.today.time.get() + &"/"
     }
 
     fn file_location(&self) -> String {
@@ -231,8 +226,9 @@ impl Department {
     }
 
     fn create_path(&self) -> Result<()> {
-        if !Path::new(&self.location()).is_dir() {
-            create_dir(&self.location())?;
+        let loc = self.location();
+        if !Path::new(&loc).is_dir() {
+            create_dir(loc)?;
         }
 
         let date = self.storage_location_today();
@@ -255,6 +251,10 @@ impl Department {
         } else {
             self.file_location()
         }
+    }
+
+    fn destroy(self) -> (Paths, Target, Today) {
+        (self.base, self.path, self.today)
     }
 }
 
@@ -345,19 +345,21 @@ fn a_client_and_runtime() -> Result<(Client, Runtime)> {
 fn pursue_targets(mut targets: Targets, paths: ConfigPath) -> Result<Report> {
     match a_client_and_runtime() {
         Ok((client, rt)) => {
-            let today = Today::build();
+            let (mut dept, mut today) = (paths.departments, Today::build());
+
             let mut report = Report::new(
                 Department::build(
                     Target::build(
                         &[String::from("reports")]
                     ),
-                    &today,
-                    &paths.reports
+                    Today::build(),
+                    paths.reports,
                 )
             );
+
             let mut count = 0;
             while let Some(target) = targets.pop() {
-                let d = Department::build(target, &today, &paths.departments);
+                let d = Department::build(target, today, dept);
 
                 let handle = rt.spawn(
                     collect_content(
@@ -372,8 +374,8 @@ fn pursue_targets(mut targets: Targets, paths: ConfigPath) -> Result<Report> {
                 
                 count += 1;
                 if count%3 == 0 {
-                    std::thread::sleep(Duration::from_millis(1000));
                     count -= count;
+                    std::thread::sleep(Duration::from_millis(1000));
                 }
 
                 match d.create_path() {
@@ -386,6 +388,8 @@ fn pursue_targets(mut targets: Targets, paths: ConfigPath) -> Result<Report> {
                     },
                     Err(e) => println!("{e}"),
                 };
+
+                (dept, _, today) = d.destroy();
             }
             Ok(report)
         },
@@ -424,10 +428,10 @@ fn join(s: &[String], acc: String) -> String {
 }
 
 fn join_by(s: &[String], acc: String, sep: &str) -> String {
-    match s {
-        [] => acc,
-        [a] => acc + a,
-        [a, b @ ..] => join_by(b, acc + a + sep, sep),
+    if let [a, b @ ..] = s {
+        join_by(b, acc + a + sep, sep)
+    } else {
+        join(s, acc)
     }
 }
 
