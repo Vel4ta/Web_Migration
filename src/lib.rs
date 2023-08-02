@@ -1,12 +1,15 @@
+use std::default;
 use std::fs::{File, create_dir};
 use chrono::Utc;
-use std::io::{BufReader, BufWriter, Write, BufRead};
+use std::io::{BufReader, BufWriter, Write, BufRead, Cursor, copy};
 use std::path::Path;
 use bytes::Bytes;
 use reqwest::{Client, Method, RequestBuilder};
 use std::time::Duration;
 use error_chain::error_chain;
 use tokio::runtime::{Runtime, Builder};
+use image::io::Reader as ImageReader;
+use std::collections::HashSet;
 
 error_chain! {
     foreign_links {
@@ -324,6 +327,169 @@ fn read_file(path: String) -> Result<BufReader<File>>{
     Ok(BufReader::new(file))
 }
 
+fn scan_bytes(data: Bytes) -> HashSet<Vec<u8>> {
+    let l = data.len();
+    let mut i = 0;
+    let mut j = 0;
+    let mut scan = HashSet::new();
+    let content_marker = "id=\"content\"".as_bytes();
+    let cl = content_marker.len();
+    let sidebar_marker = "class=\"layout-csun--footer\"".as_bytes();
+    let sl = sidebar_marker.len();
+    let mut k = 0;
+    while i < l {
+        while j < cl && data[i] == content_marker[j] {
+            i += 1;
+            j += 1;
+        }
+        if j == cl {
+            break;
+        }
+        j = 0;
+        i += 1;
+    }
+    while i < l {
+        if data[i] == b'<' && i + 3 < l && data[i + 1] == b'i' && data[i + 2] == b'm' && data[i + 3] == b'g' {
+            j = i + 4;
+            // really bad way of checking for src
+            while j < l && data[j] != b's' {
+                j += 1;
+            }
+            if j + 4 < l && data[j + 4] == b'"' {
+                j += 4;
+                i = j;
+                while j + 1 < l && data[j + 1] != b'"' {
+                    j += 1; 
+                }
+                if j + 1 < l {
+                    scan.insert(Vec::from(&data[i + 1 .. j + 1]));
+                }
+                j += 1;
+            }
+            i = j
+        }
+        if k < sl && data[i] == sidebar_marker[k] {
+            k += 1;
+        } else if k < sl {
+            k = 0;
+        } else {
+            break;
+        }
+        i += 1;
+    }
+    scan
+}
+
+fn rest<T>(data: &[T]) -> &[T] {
+    match data {
+        [_, b @ ..] => b,
+        _ => &[]
+    }
+}
+
+fn bytes_match(a: &[u8], b: &[u8], count: usize) -> usize {
+    match a {
+        [c, d @ ..] if !b.is_empty() && b.first().unwrap() == c => bytes_match(d, rest(b), count + 1),
+        _ => count
+    }
+}
+
+fn proper_scan_bytes(data: Bytes, content_marker: &str, end_content_marker: &str, tag_marker: &str, attribute_marker: &str, pattern_marker: &str) -> HashSet<Vec<u8>> {
+    let l = data.len();
+    let mut i = 0;
+    let mut j = 0;
+    let mut k = 0;
+    let mut scan = HashSet::new();
+    // where to start scanning
+    let content_marker = content_marker.as_bytes();
+    let cl = content_marker.len();
+    // where to stop scanning
+    let end_content_marker = end_content_marker.as_bytes();
+    let el = end_content_marker.len();
+    // tag to find. syntax: <tag
+    let tag_marker = tag_marker.as_bytes();
+    let tl = tag_marker.len();
+    // attribute in tag
+    let attribute_marker = attribute_marker.as_bytes();
+    let al = attribute_marker.len();
+    // pattern that deliminates the end of an attribute e.g. " or the space character
+    let pattern_marker = pattern_marker.as_bytes();
+    let pl = pattern_marker.len();
+
+    // look for where to start scanning
+    while i + cl < l {
+        j = bytes_match(&data[i..i+cl], &content_marker, j);
+        i += j;
+        if j == cl {
+            break;
+        }
+        j = 0;
+        i += 1;
+    }
+    // start scanning for tag marker. Also check for end content marker
+    while i + tl < l {
+        j = bytes_match(&data[i..i+tl], &tag_marker, 0);
+        if j == tl {
+            i += j;
+            j = i;
+            // searching for attribute
+            k = bytes_match(&data[j..j+al], &attribute_marker, 0);
+            while j < l && k != al {
+                j += 1;
+                k = bytes_match(&data[j..j+al], &attribute_marker, 0);
+            }
+            if k == al {
+                // {attribute}=" therefore i += k + 2
+                i += k + 2;
+                j = i;
+                // searching for pattern marker
+                while j + 1 < l && bytes_match(&[data[j+1]], &pattern_marker, 0) != pl {
+                    j += 1; 
+                }
+                // storing value of atrribute into scan
+                if j + 1 < l {
+                    let temp = Vec::from(&data[i + 1 .. j + 1]);
+                    println!("{:?}", temp);
+                    scan.insert(temp);
+                }
+                j += 1;
+                i = j;
+            }
+        } else if i + el > l || bytes_match(&data[i..i+el], &end_content_marker, 0) == el {
+            // checking if we can stop scanning
+            break;
+        } else if j > 0 {
+            // trying to save us from rechecking same bytes
+            i += j;
+        } else {
+            i += 1;
+        }
+    }
+    scan
+}
+
+async fn download_images(scan: HashSet<Vec<u8>>, path: String) -> Result<()> {
+    let base_path = "C:/Users/Vel4ta/Desktop/mtc/";
+    let new_path = &(String::from(base_path) + &path);
+    if !Path::new(new_path).is_dir() {
+        create_dir(new_path)?;
+    }
+    for item in scan {
+        let mut url = item.iter().fold(&mut String::new(),|acc, x| {acc.push(*x as char); acc}).to_owned();
+        if item.iter().next().unwrap() == &b'/' {
+            url = String::from("https://www.csun.edu") + &url;
+        }
+        let copy = url.clone();
+        let img_name = copy.split("/").last().unwrap().replace("%20", "_");
+        let img_name = img_name.split("?").next().unwrap();
+        let img_bytes = reqwest::get(url).await.unwrap().bytes().await.unwrap();
+        println!("{:?}", String::from(new_path) + img_name);
+        let img = ImageReader::new(Cursor::new(img_bytes)).with_guessed_format()?;
+        img.decode().unwrap().save(String::from(new_path) + img_name).unwrap();
+    }
+    Ok(())
+}
+
 fn write_file(data: Bytes, path: String) -> Result<()> {
     let f = File::create(path)?;
     let mut f = BufWriter::new(f);
@@ -380,9 +546,15 @@ fn pursue_targets(mut targets: Targets, paths: ConfigPath) -> Result<Report> {
 
                 match d.create_path() {
                     Ok(_) => match rt.block_on(handle) {
-                        Ok(Some(content)) => report.add(
-                            d.store(content)
-                        ),
+                        Ok(Some(content)) => {
+                            // let copy = content.clone();
+                            // let scan = scan_bytes(copy);
+                            // let image_handle = rt.spawn(download_images(scan, d.path.base.clone() + "/"));
+                            // if let Err(e) = rt.block_on(image_handle) {
+                            //     println!("{e}");
+                            // }
+                            report.add(d.store(content));
+                        },
                         Ok(None) => println!("{}", d.path.to_url()),
                         Err(e) => println!("{e}"),
                     },
