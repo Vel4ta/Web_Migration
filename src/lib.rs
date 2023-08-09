@@ -7,6 +7,8 @@ use reqwest::{Client, Method, RequestBuilder};
 use std::time::Duration;
 use error_chain::error_chain;
 use tokio::runtime::{Runtime, Builder};
+// use image::io::Reader as ImageReader;
+use std::collections::HashSet;
 
 error_chain! {
     foreign_links {
@@ -45,7 +47,6 @@ impl Today {
     }
 }
 
-#[derive(Clone)]
 enum Paths {
     Departments(String),
     Targets(String),
@@ -76,7 +77,7 @@ impl Paths {
             Paths::Reports(p) |
             Paths::Targets(p) |
             Paths::BaseUrl(p) => String::new() + p,
-            Paths::Bad => String::from("bad path"),
+            _ => String::from("bad path"),
         }
     }
 
@@ -93,20 +94,18 @@ struct ConfigPath {
 }
 
 impl ConfigPath {
-    fn build(paths: Vec<Paths>) -> Self {
-        let (d, t, b, r) = paths.iter()
-            .fold(
-                (Paths::Bad, Paths::Bad, Paths::Bad, Paths::Bad),
-                |(d, t, b, r), path| {
-                    match *path {
-                        Paths::Departments(_) => (path.clone(), t, b, r),
-                        Paths::Targets(_) => (d, path.clone(), b, r),
-                        Paths::BaseUrl(_) => (d, t, path.clone(), r),
-                        Paths::Reports(_) => (d, t, b, path.clone()),
-                        _ => (d, t, b, r)
-                    }
-                }
-            );
+    fn build(mut paths: Vec<Paths>) -> Self {
+        let (mut d, mut t, mut b, mut r) = (Paths::Bad, Paths::Bad, Paths::Bad, Paths::Bad);
+        while let Some(path) = paths.pop() {
+            (d, t, b, r) = match path {
+                Paths::Departments(_) => (path, t, b, r),
+                Paths::Targets(_) => (d, path, b, r),
+                Paths::BaseUrl(_) => (d, t, path, r),
+                Paths::Reports(_) => (d, t, b, path),
+                _ => (d, t, b, r),
+            }
+        }
+
         Self {
             departments: d,
             targets: t,
@@ -118,17 +117,7 @@ impl ConfigPath {
     fn prep_paths(base_path: &str) -> Option<Vec<Paths>> {
         prep_data(
             "./config/config.txt",
-            |(mut tot, mut cur), item| match item {
-                ';' | ',' => {
-                    tot.push(cur);
-                    (tot, String::new())
-                },
-                v if v != ' ' => {
-                    cur.push(item);
-                    (tot, cur)
-                },
-                _ => (tot, cur),
-            },
+            |v: char| v == ';' || v == ',',
             |p: &[String]| Paths::from(p, &base_path)
         )
     }
@@ -147,12 +136,12 @@ impl Target {
             [a, b @ ..] => (String::from(a), Some(b)),
         };
 
+
         Self {
             base: base,
-            extension: if let Some(ext) = extension {
-                join_by(ext, String::new(), "/")
-            } else {
-                String::new()
+            extension: match extension {
+                Some(ext) => join_by(ext, String::new(), "/"),
+                _ => String::new()
             },
         }
     }
@@ -201,17 +190,7 @@ impl Targets {
     fn prep_targets(target_path: &Paths) -> Option<Vec<Target>> {
         prep_data(
             &target_path.get_path(),
-            |(mut tot, mut cur), item| match item {
-                '/' => {
-                    tot.push(cur);
-                    (tot, String::new())
-                },
-                v if v != ' ' => {
-                    cur.push(item);
-                    (tot, cur)
-                },
-                _ => (tot, cur),
-            },
+            |v| v == '/',
             Target::build
         )
     }
@@ -220,17 +199,15 @@ impl Targets {
 struct Department {
     base: Paths,
     path: Target,
-    timestamp: String,
-    date: String,
+    today: Today,
 }
 
 impl Department {
-    fn build(path: Target, today: &Today, base: &Paths) -> Self {
+    fn build(path: Target, today: Today, base: Paths) -> Self {
         Self {
-            base: base.clone(),
+            base: base,
             path: path,
-            timestamp: today.time.get(),
-            date: today.date.get(),
+            today: today,
         }
     }
 
@@ -239,11 +216,11 @@ impl Department {
     }
 
     fn storage_location_today(&self) -> String {
-        self.location() + &self.date + &"/"
+        self.location() + &self.today.date.get() + &"/"
     }
     
     fn storage_location_now(&self) -> String {
-        self.storage_location_today() + &self.timestamp + &"/"
+        self.storage_location_today() + &self.today.time.get() + &"/"
     }
 
     fn file_location(&self) -> String {
@@ -251,8 +228,9 @@ impl Department {
     }
 
     fn create_path(&self) -> Result<()> {
-        if !Path::new(&self.location()).is_dir() {
-            create_dir(&self.location())?;
+        let loc = self.location();
+        if !Path::new(&loc).is_dir() {
+            create_dir(loc)?;
         }
 
         let date = self.storage_location_today();
@@ -276,31 +254,69 @@ impl Department {
             self.file_location()
         }
     }
+
+    fn destroy(self) -> (Paths, Target, Today) {
+        (self.base, self.path, self.today)
+    }
+}
+
+struct Report {
+    info: Department,
+    data: Vec<String>,
+}
+
+impl Report {
+    fn new(info: Department) -> Self {
+        Self {
+            info: info,
+            data: Vec::new(),
+        }
+    }
+
+    fn add(&mut self, report: String) -> () {
+        self.data.push(report)
+    }
+
+    fn build(self) -> Result<String> {
+        match self.info.create_path() {
+            Ok(_) => Ok(
+                self.info.store(
+                    Bytes::from(
+                        self.data
+                            .iter()
+                            .fold(String::new(), |acc, item| {
+                                acc + item + ",\n"
+                            })
+                            .as_bytes()
+                            .to_owned()
+                    )
+                )
+            ),
+            Err(e) => Err(e),
+        }
+    }
 }
 
 pub struct Manager;
 
 impl Manager {
-    pub fn run(base_path: &str) -> Result<Vec<String>> {
-        if Path::new(&base_path).is_dir() {
-            match ConfigPath::prep_paths(base_path) {
-                Some(c) => {
-                    let paths = ConfigPath::build(c);
+    pub fn run(base_path: &str) -> Result<String> {
+        if !Path::new(&base_path).is_dir() {
+            return Err(Error::from("Invalid base path"))
+        }
 
-                    let isolated_targets = Targets::prep_targets(&paths.targets);
+        if let Some(c) = ConfigPath::prep_paths(base_path) {
+            let paths = ConfigPath::build(c);
 
-                    let targets = Targets::build(isolated_targets);
-            
-                    let report = pursue_targets(targets, paths)?;
-            
-                    Ok(report)
-                },
-                _ => {
-                    Err(Error::from("bad config file"))
-                },
-            }
+            let isolated_targets = Targets::prep_targets(&paths.targets);
+
+            let targets = Targets::build(isolated_targets);
+        
+            let report = pursue_targets(targets, paths)?;
+
+            report.build()
         } else {
-            Err(Error::from("Invalid base path"))
+            Err(Error::from("Missing config file. Make sure config.txt exists in config/. Make sure it has appropriate content."))
         }
     }
 }
@@ -310,10 +326,177 @@ fn read_file(path: String) -> Result<BufReader<File>>{
     Ok(BufReader::new(file))
 }
 
+fn rest<T>(data: &[T]) -> &[T] {
+    match data {
+        [_, b @ ..] => b,
+        _ => &[]
+    }
+}
+
+fn bytes_match(a: &[u8], b: &[u8], count: usize) -> usize {
+    match a {
+        [c, d @ ..] if !b.is_empty() && b.first().unwrap() == c => bytes_match(d, rest(b), count + 1),
+        _ => count
+    }
+}
+
+fn proper_scan_bytes(data: Bytes, content_marker: &str, end_content_marker: &str, tag_marker: &str, attribute_marker: &str, pattern_marker: &str, deliminator_marker: &str) -> HashSet<Vec<u8>> {
+    let l = data.len();
+    let mut i = 0;
+    let mut j = 0;
+    let mut k;
+    let mut scan = HashSet::new();
+    // where to start scanning
+    let content_marker = content_marker.as_bytes();
+    let cl = content_marker.len();
+    // where to stop scanning
+    let end_content_marker = end_content_marker.as_bytes();
+    let el = end_content_marker.len();
+    // tag to find. syntax: <tag
+    let tag_marker = tag_marker.as_bytes();
+    let tl = tag_marker.len();
+    // attribute in tag
+    let attribute_marker = attribute_marker.as_bytes();
+    let al = attribute_marker.len();
+    // pattern to search for within value of attribute
+    let pattern_marker = pattern_marker.as_bytes();
+    let pl = pattern_marker.len();
+    // deliminates the end of an attribute e.g. " or the space character
+    let deliminator_marker = deliminator_marker.as_bytes();
+    let dl = deliminator_marker.len();
+
+    // look for where to start scanning
+    while i + cl < l {
+        j = bytes_match(&data[i..i+cl], &content_marker, j);
+        i += j;
+        if j == cl {
+            break;
+        }
+        j = 0;
+        i += 1;
+    }
+    // start scanning for tag marker. Also check for end content marker
+    while i + tl < l {
+        j = bytes_match(&data[i..i+tl], &tag_marker, 0);
+        if j == tl && i + j + al < l {
+            i += j;
+            // searching for attribute
+            loop {
+                j = bytes_match(&data[i..i+al], &attribute_marker, 0);
+                i += j + 1;
+                if i + al >= l || j == al {
+                    break;
+                }
+            }
+            if j == al && i + j + 1 + pl < l {
+                // {attribute}=" therefore i += j + 1
+                // doesn't work for {attribute}= e.g. width=300
+                i += 1;
+                j = i;
+
+                // searching for end of attribute
+                loop {
+                    k = bytes_match(&data[j..j+dl], &deliminator_marker, 0);
+                    j += k + 1;
+                    if j + dl > l || k == dl {
+                        break;
+                    }
+                }
+
+                // this was easier than finding pattern before deliminator
+                // but this forces us to rescan :(
+
+                // check the pattern we're looking for is in attribute value
+                let mut temp = 0;
+                while temp < j - 2 - i && j - 2 - (i + temp) > pl && bytes_match(&data[i+temp..j-2], &pattern_marker, 0) != pl {
+                    temp += 1;
+                }
+
+                // store value of atrribute into scan
+                if j <= l && j - 2 - (i + temp) > pl {
+                    scan.insert(Vec::from(&data[i..j-2]));
+                }
+            } else {
+                j = i;
+            }
+            i = j;
+        } else if i + el < l {
+            // checking if we can stop scanning
+            k = bytes_match(&data[i..i+el], &end_content_marker, 0);
+            if k == el {
+                break;
+            }
+            // trying to save us from rechecking same bytes
+            i += j.max(k) + 1;
+        } else {
+            break;
+        }
+    }
+    scan
+}
+
+// temporary solution
+async fn download_files(scan: HashSet<Vec<u8>>, path: String) -> Result<()> {
+    let mut base_path = String::from("T:/Web_Migration/files/");
+    for part in path.split("/") {
+        base_path += part;
+        if !Path::new(&base_path).is_dir() {
+            create_dir(&base_path)?;
+        }
+        base_path += "/";    
+    }
+    let path = base_path;
+
+    for target in scan.iter() {
+        let url = match target.first() {
+            Some(b) if b == &b'/' => String::from("https://www.csun.edu") + String::from_utf8_lossy(target).as_ref(),
+            Some(_) => String::from_utf8_lossy(target).as_ref().to_string(),
+            _ => continue
+        };
+        let response = reqwest::get(url).await?;
+        let fname = response
+            .url()
+            .path_segments()
+            .and_then(|segments| segments.last())
+            .and_then(|name| if name.is_empty() { None } else { name.split("?").next() })
+            .and_then(|name| Some(name.replace("%20", " ")))
+            .unwrap_or(String::from("tmp.bin"));
+
+        println!("file to download: '{}'", fname);
+        let fname = path.clone() + &fname;
+        let content = response.bytes().await?;
+        write_file(content, fname)?;
+    }
+    Ok(())
+}
+
+// async fn download_images(scan: HashSet<Vec<u8>>, path: String) -> Result<()> {
+//     let base_path = "C:/Users/Vel4ta/Desktop/mtc/";
+//     let new_path = &(String::from(base_path) + &path);
+//     if !Path::new(new_path).is_dir() {
+//         create_dir(new_path)?;
+//     }
+//     for item in scan {
+//         let mut url = item.iter().fold(&mut String::new(),|acc, x| {acc.push(*x as char); acc}).to_owned();
+//         if item.iter().next().unwrap() == &b'/' {
+//             url = String::from("https://www.csun.edu") + &url;
+//         }
+//         let copy = url.clone();
+//         let img_name = copy.split("/").last().unwrap().replace("%20", "_");
+//         let img_name = img_name.split("?").next().unwrap();
+//         let img_bytes = reqwest::get(url).await.unwrap().bytes().await.unwrap();
+//         println!("{:?}", String::from(new_path) + img_name);
+//         let img = ImageReader::new(Cursor::new(img_bytes)).with_guessed_format()?;
+//         img.decode().unwrap().save(String::from(new_path) + img_name).unwrap();
+//     }
+//     Ok(())
+// }
+
 fn write_file(data: Bytes, path: String) -> Result<()> {
     let f = File::create(path)?;
     let mut f = BufWriter::new(f);
     f.write_all(&data)?;
+    f.flush()?;
     Ok(())
 }
 
@@ -322,20 +505,30 @@ fn a_client_and_runtime() -> Result<(Client, Runtime)> {
         .timeout(Duration::from_secs(60))
         .build()?;
     let r = Builder::new_multi_thread()
-        // .worker_threads(1)
+        .worker_threads(3)
         .enable_all()
         .build()?;
     Ok((c, r))
 }
 
-fn pursue_targets(mut targets: Targets, paths: ConfigPath) -> Result<Vec<String>> {
+fn pursue_targets(mut targets: Targets, paths: ConfigPath) -> Result<Report> {
     match a_client_and_runtime() {
         Ok((client, rt)) => {
-            let today = Today::build();
-            let mut results = Vec::<String>::new();
+            let (mut dept, mut today) = (paths.departments, Today::build());
+
+            let mut report = Report::new(
+                Department::build(
+                    Target::build(
+                        &[String::from("reports")]
+                    ),
+                    Today::build(),
+                    paths.reports,
+                )
+            );
+
             let mut count = 0;
             while let Some(target) = targets.pop() {
-                let d = Department::build(target, &today, &paths.departments);
+                let d = Department::build(target, today, dept);
 
                 let handle = rt.spawn(
                     collect_content(
@@ -349,23 +542,45 @@ fn pursue_targets(mut targets: Targets, paths: ConfigPath) -> Result<Vec<String>
                 );
                 
                 count += 1;
-                if count%10 == 0 {
-                    std::thread::sleep(Duration::from_millis(3000));
+                if count%3 == 0 {
+                    count -= count;
+                    std::thread::sleep(Duration::from_millis(1000));
                 }
 
                 match d.create_path() {
                     Ok(_) => match rt.block_on(handle) {
-                        Ok(Some(content)) => results.push(
-                            d.store(content)
-                        ),
+                        Ok(Some(content)) => {
+
+                            // temporary solution
+                            let copy = content.clone();
+                            let scan = proper_scan_bytes(
+                                copy,
+                                "id=\"content\"",
+                                "class=\"layout-csun--footer\"",
+                                "<a ",
+                                "href",
+                                "/sites/default/files/",
+                                "\""
+                            );
+
+                            let file_handle = rt.spawn(download_files(scan, d.path.to_url()));
+                            if let Err(e) = rt.block_on(file_handle) {
+                                println!("{e}");
+                            }
+
+
+                            report.add(d.store(content));
+                        },
                         Ok(None) => println!("{}", d.path.to_url()),
                         Err(e) => println!("{e}"),
                     },
                     Err(e) => println!("{e}"),
                 };
+
+                (dept, _, today) = d.destroy();
             }
-            Ok(results)
-        },
+            Ok(report)
+        },  
         Err(e) => Err(e),
     }
 }
@@ -401,18 +616,17 @@ fn join(s: &[String], acc: String) -> String {
 }
 
 fn join_by(s: &[String], acc: String, sep: &str) -> String {
-    match s {
-        [] => acc,
-        [a] => acc + a,
-        [a, b @ ..] => join_by(b, acc + a + sep, sep),
+    if let [a, b @ ..] = s {
+        join_by(b, acc + a + sep, sep)
+    } else {
+        join(s, acc)
     }
 }
 
-fn prep_data<
-    T,
-    F1: Fn((Vec<String>, String), char) -> (Vec<String>, String),
-    F2: Fn(&[String]) -> T
-    >(file_path: &str, f1: F1, f2: F2) -> Option<Vec<T>> {
+fn prep_data<T, F1, F2>(file_path: &str, f1: F1, f2: F2) -> Option<Vec<T>> 
+where
+    F1: Fn(char) -> bool,
+    F2: Fn(&[String]) -> T {
     match read_file(String::from(file_path)) {
         Ok(buf) => Some(buf.lines()
             .fold(Vec::new(), |mut acc, item| {
@@ -421,7 +635,17 @@ fn prep_data<
                         let (mut tot, cur) = y.chars()
                             .fold(
                                 (Vec::new(), String::new()),
-                                &f1
+                                |(mut tot, mut cur), item| match item {
+                                    v if f1(v) => {
+                                        tot.push(cur);
+                                        (tot, String::new())
+                                    },
+                                    v if v != ' ' => {
+                                        cur.push(item);
+                                        (tot, cur)
+                                    },
+                                    _ => (tot, cur),
+                                }
                             );
                         tot.push(cur);
                         acc.push(f2(&tot[..]));
@@ -437,3 +661,31 @@ fn prep_data<
         },
     }
 }
+
+// fn prep_data_generic<T: Copy, F1, F2>(file_path: &str, f1: F1, f2: F2, acc1: T) -> Option<Vec<T>>
+// where
+//     F1: Fn((Vec<T>, T), char) -> (Vec<T>, T),
+//     F2: Fn(&[T]) -> T {
+//     match read_file(String::from(file_path)) {
+//         Ok(buf) => Some(buf.lines()
+//             .fold(Vec::new(), |mut acc2, item| {
+//                 match item {
+//                     Ok(y) => {
+//                         let (mut tot, cur) = y
+//                             .chars()
+//                             .fold((Vec::new(), acc1), &f1);
+
+//                         tot.push(cur);
+//                         acc2.push(f2(&tot[..]));
+//                     },
+//                     Err(e) => println!("{e}"),
+//                 };
+//                 acc2
+//             })
+//         ),
+//         Err(e) => {
+//             println!("{e}");
+//             None
+//         },
+//     }
+// }
