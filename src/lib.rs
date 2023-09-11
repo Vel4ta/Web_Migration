@@ -453,6 +453,7 @@ async fn download_files(scan: HashSet<Vec<u8>>, path: String) -> Result<()> {
             Some(_) => String::from_utf8_lossy(target).as_ref().to_string(),
             _ => continue
         };
+
         let response = reqwest::get(url).await?;
         let fname = response
             .url()
@@ -469,28 +470,6 @@ async fn download_files(scan: HashSet<Vec<u8>>, path: String) -> Result<()> {
     }
     Ok(())
 }
-
-// async fn download_images(scan: HashSet<Vec<u8>>, path: String) -> Result<()> {
-//     let base_path = "C:/Users/Vel4ta/Desktop/mtc/";
-//     let new_path = &(String::from(base_path) + &path);
-//     if !Path::new(new_path).is_dir() {
-//         create_dir(new_path)?;
-//     }
-//     for item in scan {
-//         let mut url = item.iter().fold(&mut String::new(),|acc, x| {acc.push(*x as char); acc}).to_owned();
-//         if item.iter().next().unwrap() == &b'/' {
-//             url = String::from("https://www.csun.edu") + &url;
-//         }
-//         let copy = url.clone();
-//         let img_name = copy.split("/").last().unwrap().replace("%20", "_");
-//         let img_name = img_name.split("?").next().unwrap();
-//         let img_bytes = reqwest::get(url).await.unwrap().bytes().await.unwrap();
-//         println!("{:?}", String::from(new_path) + img_name);
-//         let img = ImageReader::new(Cursor::new(img_bytes)).with_guessed_format()?;
-//         img.decode().unwrap().save(String::from(new_path) + img_name).unwrap();
-//     }
-//     Ok(())
-// }
 
 fn write_file(data: Bytes, path: String) -> Result<()> {
     let f = File::create(path)?;
@@ -559,6 +538,21 @@ fn pursue_targets(mut targets: Targets, paths: ConfigPath) -> Result<Report> {
                                 "class=\"layout-csun--footer\"",
                                 "<a ",
                                 "href",
+                                "/sites/default/files/",
+                                "\""
+                            );
+
+                            let file_handle = rt.spawn(download_files(scan, d.path.to_url()));
+                            if let Err(e) = rt.block_on(file_handle) {
+                                println!("{e}");
+                            }
+
+                            let scan = proper_scan_bytes(
+                                content.clone(),
+                                "id=\"content\"",
+                                "class=\"layout-csun--footer\"",
+                                "<img ",
+                                "src",
                                 "/sites/default/files/",
                                 "\""
                             );
